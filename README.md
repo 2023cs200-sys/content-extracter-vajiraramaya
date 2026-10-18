@@ -1,6 +1,6 @@
-# Vajirarama About-section collector
+# Website content collector
 
-This script automatically visits the Siri Vajirarama Temple About page and follows nested links under `/about-us-2/`, including linked monk biographies. It creates `vajirarama_about_content.docx` with extracted headings, paragraphs, lists, source URLs, and image URLs plus available alt text/captions.
+This script starts at `START_URL`, follows navigation and content links on that exact host only, and creates `website_content.docx` with extracted headings, paragraphs, lists, tables, source URLs, and image URLs plus available alt text/captions. To collect another website, change `START_URL` in `collect_vajirarama.py`.
 
 ## Requirements
 - Python 3.10 or newer
@@ -30,10 +30,17 @@ This script automatically visits the Siri Vajirarama Temple About page and follo
    py collect_vajirarama.py
    ```
 
-7. When it finishes, open `vajirarama_about_content.docx` in the same folder.
+7. When it finishes, open `website_content.docx` in the same folder.
 
 ## Notes
-- The crawl is restricted to `https://vajirarama.lk/about-us-2/` and its descendants. It does not crawl the Noticeboard or `bosat.vajirarama.lk` subdomain.
+- The default crawl is restricted to the exact `lib.vajirarama.lk` host. Links to `vajirarama.lk`, `www.vajirarama.lk`, `bosat.vajirarama.lk`, and all other hosts are excluded.
+- The start URL is configured near the top of `collect_vajirarama.py`:
+
+  ```python
+  START_URL = "https://lib.vajirarama.lk/"
+  ```
+
+- Pages are limited to `MAX_PAGES = 500` by default. Increase it carefully for larger sites.
 - It includes URLs for images rather than downloading/embedding the image files.
 - Websites sometimes load content dynamically or block automated requests. Check the “Collection notes” section in the generated Word file for failures and manually review important pages against their source URLs.
 - Use the collected content in accordance with the website's copyright and reuse terms.

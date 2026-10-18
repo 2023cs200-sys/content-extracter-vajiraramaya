@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Collect Vajirarama About-section pages into a Word document.
+"""Collect one website host and its navigation into a Word document.
 
 Run locally where internet access is available:
     py -m pip install -r requirements.txt
     py collect_vajirarama.py
 
-The crawler stays under https://vajirarama.lk/about-us-2/ and follows nested
-About-section links (including monk biographies). It records source URLs and
-image URLs/captions; it does not republish or bypass access controls.
+The crawler stays on the exact host in START_URL and follows navigation links
+on that host only. It records source URLs and image URLs/captions; it does not
+republish or bypass access controls.
 """
 from __future__ import annotations
-import re
 import time
 from collections import deque
 from datetime import datetime
@@ -18,21 +17,32 @@ from urllib.parse import urljoin, urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
 
 import requests
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 
-START_URL = "https://vajirarama.lk/about-us-2/"
-ALLOWED_HOST = "vajirarama.lk"
-ALLOWED_PREFIX = "/about-us-2/"
-OUTPUT_FILE = "vajirarama_about_content.docx"
+START_URL = "https://lib.vajirarama.lk/"
 MAX_PAGES = 500
+OUTPUT_FILE = "website_content.docx"
 DELAY_SECONDS = 0.8
 TIMEOUT_SECONDS = 25
 USER_AGENT = "EducationalContentArchive/1.0 (polite crawler; contact site administrator if needed)"
+NON_HTML_EXTENSIONS = {
+    ".7z", ".avi", ".css", ".csv", ".doc", ".docx", ".gif", ".gz", ".ico",
+    ".jpeg", ".jpg", ".js", ".json", ".mp3", ".mp4", ".png", ".pdf", ".ppt",
+    ".pptx", ".rar", ".svg", ".tar", ".txt", ".webp", ".woff", ".woff2",
+    ".xls", ".xlsx", ".xml", ".zip",
+}
 
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
+
+
+ALLOWED_HOST = (urlparse(START_URL).hostname or "").lower()
+
+
+def is_internal_host(hostname: str) -> bool:
+    return hostname.lower() == ALLOWED_HOST
 
 
 def canonicalize(url: str) -> str | None:
@@ -40,21 +50,21 @@ def canonicalize(url: str) -> str | None:
     p = urlparse(url)
     if p.scheme not in ("http", "https"):
         return None
-    if (p.hostname or "").lower().removeprefix("www.") != ALLOWED_HOST:
+    if not p.hostname or not is_internal_host(p.hostname):
         return None
     path = p.path or "/"
-    # Only crawl About and its descendants; normalize trailing slash.
-    if path != ALLOWED_PREFIX.rstrip("/") and not path.startswith(ALLOWED_PREFIX):
+    suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+    if suffix in NON_HTML_EXTENSIONS:
         return None
     if path != "/" and not path.endswith("/") and "." not in path.rsplit("/", 1)[-1]:
         path += "/"
-    # Drop tracking/query strings to avoid duplicate pages.
-    return f"https://{ALLOWED_HOST}{path}"
+    # Drop tracking/query strings and keep the exact configured host.
+    return f"{p.scheme}://{ALLOWED_HOST}{path}"
 
 
-def get_robots_parser() -> RobotFileParser:
+def get_robots_parser(host: str) -> RobotFileParser:
     rp = RobotFileParser()
-    rp.set_url(f"https://{ALLOWED_HOST}/robots.txt")
+    rp.set_url(f"https://{host}/robots.txt")
     try:
         rp.read()
     except Exception:
@@ -62,6 +72,13 @@ def get_robots_parser() -> RobotFileParser:
         # to evade restrictions; the user should check the site's policy.
         pass
     return rp
+
+
+def can_fetch(url: str, robots_by_host: dict[str, RobotFileParser]) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    if host not in robots_by_host:
+        robots_by_host[host] = get_robots_parser(host)
+    return robots_by_host[host].can_fetch(USER_AGENT, url)
 
 
 def select_content(soup: BeautifulSoup) -> Tag:
@@ -100,6 +117,8 @@ def page_title(soup: BeautifulSoup, fallback: str) -> str:
 def extract_page(url: str) -> dict:
     response = session.get(url, timeout=TIMEOUT_SECONDS)
     response.raise_for_status()
+    if not response.url or not is_internal_host(urlparse(response.url).hostname or ""):
+        raise ValueError(f"redirected outside the configured host: {response.url}")
     soup = BeautifulSoup(response.text, "html.parser")
     title = page_title(soup, url.rstrip("/").split("/")[-1].replace("-", " ").title())
     content = clean_content(select_content(soup))
@@ -114,7 +133,7 @@ def extract_page(url: str) -> dict:
             if not src and el.get("srcset"):
                 src = el.get("srcset").split(",")[0].strip().split(" ")[0]
             if src:
-                img_url = urljoin(response.url, src)
+                img_url = urljoin(url, src)
                 alt = (el.get("alt") or "").strip()
                 # A nearby figure caption is more useful than an empty alt.
                 parent = el.find_parent("figure")
@@ -145,16 +164,17 @@ def extract_page(url: str) -> dict:
         elif el.name == "p":
             blocks.append({"type": "p", "text": text})
 
-    # Crawl only links that are descendants of the About section.
+    # Crawl links from the extracted content, including links to internal
+    # subdomains and nested navigation pages.
     for a in content.select("a[href]"):
-        target = canonicalize(urljoin(response.url, a.get("href", "")))
+        target = canonicalize(urljoin(url, a.get("href", "")))
         if target and target != url:
             links.add(target)
 
-    # If content selector missed navigation-style links in a section page,
-    # inspect anchors in the page body, still constrained to /about-us-2/.
+    # If the content selector missed navigation-style links, inspect all body
+    # anchors as a fallback. canonicalize() still constrains them to the site.
     for a in (soup.body or soup).select("a[href]"):
-        target = canonicalize(urljoin(response.url, a.get("href", "")))
+        target = canonicalize(urljoin(url, a.get("href", "")))
         if target and target != url:
             links.add(target)
 
@@ -193,7 +213,7 @@ def build_docx(pages: list[dict], errors: list[tuple[str, str]]):
     styles["Title"].font.name = "Arial"
     styles["Title"].font.color.rgb = RGBColor(31, 78, 121)
 
-    doc.add_heading("Siri Vajirarama Temple — About Section Archive", 0)
+    doc.add_heading("Website Content Archive", 0)
     p = doc.add_paragraph()
     p.add_run("Collected on: ").bold = True
     p.add_run(datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"))
@@ -201,19 +221,19 @@ def build_docx(pages: list[dict], errors: list[tuple[str, str]]):
     p.add_run("Starting page: ").bold = True
     add_hyperlink(p, START_URL, START_URL)
     doc.add_paragraph(
-        "This document is an automatically collected reference copy of pages discovered under the site's About section. "
+        "This document is an automatically collected reference copy of pages discovered on the starting site and its internal subdomains. "
         "Original page URLs and image URLs are preserved. Text, image captions, and page structure may not be identical to the live website. "
         "Please respect the website's copyright and terms when reusing content."
     )
     doc.add_heading("Contents", level=1)
-    for i, page in enumerate(pages, 1):
+    for page in pages:
         p = doc.add_paragraph(style="List Number")
         p.add_run(page["title"] + " — ")
         add_hyperlink(p, page["url"], page["url"])
     if errors:
         doc.add_paragraph(f"Pages that could not be fetched: {len(errors)}. See the collection notes at the end.")
 
-    for i, page in enumerate(pages, 1):
+    for page in pages:
         doc.add_page_break()
         doc.add_heading(page["title"], level=1)
         p = doc.add_paragraph()
@@ -256,22 +276,23 @@ def build_docx(pages: list[dict], errors: list[tuple[str, str]]):
         for url, err in errors:
             p = doc.add_paragraph(style="List Bullet")
             p.add_run(url + " — " + err)
-    doc.add_paragraph("Scope: links under https://vajirarama.lk/about-us-2/ only. External links and the separate Bosat subdomain are not included by this About-section crawler.")
+    doc.add_paragraph(
+        f"Scope: links on the exact configured host ({ALLOWED_HOST}) only. "
+        "External domains and non-HTML assets are not included."
+    )
     doc.save(OUTPUT_FILE)
 
 
 def main():
-    robots = get_robots_parser()
-    # If robots rules explicitly disallow the start URL, stop rather than crawl.
-    try:
-        if not robots.can_fetch(USER_AGENT, START_URL):
-            raise SystemExit("The site's robots.txt disallows this crawler for the starting URL. Please request permission or review robots.txt.")
-    except Exception as exc:
-        if isinstance(exc, SystemExit):
-            raise
-        print(f"Warning: could not verify robots.txt ({exc}); check the site's crawling policy before proceeding.")
+    start_url = canonicalize(START_URL)
+    if not start_url:
+        raise SystemExit("START_URL must be an http(s) URL on a valid host.")
 
-    queue = deque([START_URL])
+    robots_by_host: dict[str, RobotFileParser] = {}
+    if not can_fetch(start_url, robots_by_host):
+        raise SystemExit("The site's robots.txt disallows this crawler for the starting URL. Please request permission or review robots.txt.")
+
+    queue = deque([start_url])
     seen = set()
     pages, errors = [], []
     while queue and len(seen) < MAX_PAGES:
@@ -282,6 +303,9 @@ def main():
         seen.add(url)
         print(f"[{len(seen)}] Fetching {url}")
         try:
+            if not can_fetch(url, robots_by_host):
+                print("  SKIPPED: disallowed by robots.txt")
+                continue
             page = extract_page(url)
             pages.append(page)
             for link in page["links"]:
@@ -294,7 +318,7 @@ def main():
         time.sleep(DELAY_SECONDS)
 
     # Stable ordering: main page first, then alphabetical title.
-    pages.sort(key=lambda p: (p["url"] != START_URL, p["title"].casefold(), p["url"]))
+    pages.sort(key=lambda p: (p["url"] != start_url, p["title"].casefold(), p["url"]))
     build_docx(pages, errors)
     print(f"\nDone. Pages saved: {len(pages)}; failures: {len(errors)}")
     print(f"Word document: {OUTPUT_FILE}")
