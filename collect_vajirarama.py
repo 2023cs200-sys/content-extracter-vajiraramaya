@@ -5,9 +5,9 @@ Run locally where internet access is available:
     py -m pip install -r requirements.txt
     py collect_vajirarama.py
 
-The crawler stays on the exact host in START_URL and follows navigation links
-on that host only. It records source URLs and image URLs/captions; it does not
-republish or bypass access controls.
+The crawler stays on the configured services section and follows only its
+service-category and service-entry links. It records source URLs and image
+URLs/captions; it does not republish or bypass access controls.
 """
 from __future__ import annotations
 import time
@@ -21,7 +21,10 @@ from bs4 import BeautifulSoup, Tag
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 
-START_URL = "https://lib.vajirarama.lk/"
+START_URL = "https://vajirarama.lk/1-services/"
+# The services landing page links to entries under /services/ as well as
+# category pages under /1-services/.
+CRAWL_PATH_PREFIXES = ("/1-services/", "/services/")
 MAX_PAGES = 500
 OUTPUT_FILE = "website_content.docx"
 DELAY_SECONDS = 0.8
@@ -60,6 +63,11 @@ def canonicalize(url: str) -> str | None:
         path += "/"
     # Drop tracking/query strings and keep the exact configured host.
     return f"{p.scheme}://{ALLOWED_HOST}{path}"
+
+
+def is_in_crawl_scope(url: str) -> bool:
+    path = urlparse(url).path
+    return any(path.startswith(prefix) for prefix in CRAWL_PATH_PREFIXES)
 
 
 def get_robots_parser(host: str) -> RobotFileParser:
@@ -165,17 +173,10 @@ def extract_page(url: str) -> dict:
             blocks.append({"type": "p", "text": text})
 
     # Crawl links from the extracted content, including links to internal
-    # subdomains and nested navigation pages.
+    # service entries and category pages.
     for a in content.select("a[href]"):
         target = canonicalize(urljoin(url, a.get("href", "")))
-        if target and target != url:
-            links.add(target)
-
-    # If the content selector missed navigation-style links, inspect all body
-    # anchors as a fallback. canonicalize() still constrains them to the site.
-    for a in (soup.body or soup).select("a[href]"):
-        target = canonicalize(urljoin(url, a.get("href", "")))
-        if target and target != url:
+        if target and target != url and is_in_crawl_scope(target):
             links.add(target)
 
     # Remove duplicate images while preserving order.
@@ -277,8 +278,9 @@ def build_docx(pages: list[dict], errors: list[tuple[str, str]]):
             p = doc.add_paragraph(style="List Bullet")
             p.add_run(url + " — " + err)
     doc.add_paragraph(
-        f"Scope: links on the exact configured host ({ALLOWED_HOST}) only. "
-        "External domains and non-HTML assets are not included."
+        f"Scope: the configured services paths ({', '.join(CRAWL_PATH_PREFIXES)}) "
+        f"on {ALLOWED_HOST}. Other site sections, external domains, and non-HTML "
+        "assets are not included."
     )
     doc.save(OUTPUT_FILE)
 
@@ -287,6 +289,8 @@ def main():
     start_url = canonicalize(START_URL)
     if not start_url:
         raise SystemExit("START_URL must be an http(s) URL on a valid host.")
+    if not is_in_crawl_scope(start_url):
+        raise SystemExit("START_URL must be inside one of the configured crawl path prefixes.")
 
     robots_by_host: dict[str, RobotFileParser] = {}
     if not can_fetch(start_url, robots_by_host):

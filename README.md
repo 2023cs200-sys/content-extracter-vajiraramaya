@@ -1,6 +1,6 @@
 # Website content collector
 
-This script starts at `START_URL`, follows navigation and content links on that exact host only, and creates `website_content.docx` with extracted headings, paragraphs, lists, tables, source URLs, and image URLs plus available alt text/captions. To collect another website, change `START_URL` in `collect_vajirarama.py`.
+This script starts at `START_URL`, follows links within the configured services paths only, and creates `website_content.docx` with extracted headings, paragraphs, lists, tables, source URLs, and image URLs plus available alt text/captions. To collect another website or section, change `START_URL`, `ALLOWED_HOST`, and `CRAWL_PATH_PREFIXES` in `collect_vajirarama.py`.
 
 ## Requirements
 - Python 3.10 or newer
@@ -33,11 +33,11 @@ This script starts at `START_URL`, follows navigation and content links on that 
 7. When it finishes, open `website_content.docx` in the same folder.
 
 ## Notes
-- The default crawl is restricted to the exact `lib.vajirarama.lk` host. Links to `vajirarama.lk`, `www.vajirarama.lk`, `bosat.vajirarama.lk`, and all other hosts are excluded.
+- The default crawl is restricted to `vajirarama.lk` paths beginning with `/1-services/` or `/services/`. This keeps the services landing page, its category pages, and its service entries while excluding unrelated pages such as About, Gallery, News, and the home page. External hosts and non-HTML assets are also excluded.
 - The start URL is configured near the top of `collect_vajirarama.py`:
 
   ```python
-  START_URL = "https://lib.vajirarama.lk/"
+  START_URL = "https://vajirarama.lk/1-services/"
   ```
 
 - Pages are limited to `MAX_PAGES = 500` by default. Increase it carefully for larger sites.
